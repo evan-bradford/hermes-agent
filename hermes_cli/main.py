@@ -2873,6 +2873,7 @@ def _launch_tui(
     pass_session_id: bool = False,
     max_turns: Optional[int] = None,
     accept_hooks: bool = False,
+    cwd_override: Optional[str] = None,
 ):
     """Replace current process with the TUI."""
     tui_dir = PROJECT_ROOT / "ui-tui"
@@ -2888,6 +2889,13 @@ def _launch_tui(
         apply_terminal_config_to_env(env=env)
     except Exception:
         logger.debug("Failed to apply terminal config bridge for TUI launch", exc_info=True)
+    if cwd_override:
+        # An explicit --in is invocation-scoped and must beat the profile's
+        # terminal.cwd bridge for both the Node UI and its Python gateway.
+        env["HERMES_CWD"] = cwd_override
+        env["_HERMES_CWD_OVERRIDE"] = cwd_override
+        if str(env.get("TERMINAL_ENV") or "local").strip().lower() == "local":
+            env["TERMINAL_CWD"] = cwd_override
     active_session_fd, active_session_file = tempfile.mkstemp(
         prefix="hermes-tui-active-session-", suffix=".json"
     )
@@ -3127,30 +3135,9 @@ def cmd_chat(args):
 
     _apply_safe_mode(args)
 
-    # --in DIR: run in DIR. Must happen before any session resolution so the
-    # workspace-scoped "latest"/-c lookups key off DIR, and it pins the
-    # session there — an explicit --in wins over a resumed session's
-    # recorded cwd (so the restore step below is skipped).
-    in_dir = getattr(args, "in_dir", None)
-    if in_dir:
-        # Git Bash / MSYS hands the CLI POSIX-style paths (`--in ~` expands to
-        # `/c/Users/x` before Python ever sees it; MSYS2's path conversion is
-        # disabled for native executables). Translate the MSYS/Cygwin/WSL
-        # drive-root spellings to native Windows form first — no-op elsewhere.
-        from tools.environments.local import _msys_to_windows_path
-
-        _target_dir = os.path.abspath(
-            os.path.expanduser(_msys_to_windows_path(in_dir))
-        )
-        if not os.path.isdir(_target_dir):
-            print(f"Error: --in directory not found: {in_dir}")
-            sys.exit(1)
-        try:
-            os.chdir(_target_dir)
-        except OSError as e:
-            print(f"Error: cannot enter --in directory {in_dir}: {e}")
-            sys.exit(1)
-        args.no_restore_cwd = True
+    # Keep direct/programmatic cmd_chat callers correct too. Normal launch
+    # paths already applied this before plugin/tool discovery.
+    _apply_chat_in_dir(args)
 
     # --resume latest: keyword for "most recent session" — same resolution
     # as `-c` with no name (workspace-scoped MRU, then global fallback).
@@ -3396,6 +3383,9 @@ def cmd_chat(args):
             pass_session_id=getattr(args, "pass_session_id", False),
             max_turns=getattr(args, "max_turns", None),
             accept_hooks=getattr(args, "accept_hooks", False),
+            cwd_override=(
+                os.getcwd() if getattr(args, "_in_dir_applied", False) else None
+            ),
         )
 
     # Import and run the CLI
@@ -12234,8 +12224,42 @@ def _should_background_mcp_startup(args) -> bool:
     return args.command in {None, "chat", "rl"}
 
 
+def _apply_chat_in_dir(args) -> None:
+    """Apply an explicit ``--in`` before agent startup imports freeze CWD."""
+    in_dir = getattr(args, "in_dir", None)
+    if not in_dir or getattr(args, "_in_dir_applied", False):
+        return
+
+    # Git Bash / MSYS hands the CLI POSIX-style paths (`--in ~` expands to
+    # `/c/Users/x` before Python ever sees it; MSYS2's path conversion is
+    # disabled for native executables). Translate the MSYS/Cygwin/WSL
+    # drive-root spellings to native Windows form first — no-op elsewhere.
+    from tools.environments.local import _msys_to_windows_path
+
+    target_dir = os.path.abspath(os.path.expanduser(_msys_to_windows_path(in_dir)))
+    if not os.path.isdir(target_dir):
+        print(f"Error: --in directory not found: {in_dir}")
+        sys.exit(1)
+    try:
+        os.chdir(target_dir)
+    except OSError as exc:
+        print(f"Error: cannot enter --in directory {in_dir}: {exc}")
+        sys.exit(1)
+
+    args.no_restore_cwd = True
+    args._in_dir_applied = True
+    os.environ["_HERMES_CWD_OVERRIDE"] = target_dir
+    if os.environ.get("TERMINAL_ENV", "local").strip().lower() == "local":
+        os.environ["TERMINAL_CWD"] = target_dir
+
+
 def _prepare_agent_startup(args) -> None:
     """Discover plugins/MCP/hooks for commands that can run an agent turn."""
+    # Plugin/tool discovery can import cli.py, whose terminal configuration
+    # snapshots os.getcwd(). Apply --in first so the explicit workspace wins
+    # on fast-chat, full-parser, and programmatic startup paths alike.
+    _apply_chat_in_dir(args)
+
     # --yolo: chokepoint guarantee that HERMES_YOLO_MODE is set before ANY
     # plugin/tool discovery below imports tools.approval, which freezes
     # _YOLO_MODE_FROZEN at import time (PR #7994 security design).  main()'s

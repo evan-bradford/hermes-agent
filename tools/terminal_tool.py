@@ -1706,6 +1706,14 @@ def _is_unusable_container_cwd(cwd: str) -> bool:
 _terminal_config_bridge_attempted = False
 
 
+def _reassert_invocation_cwd_override() -> None:
+    """Keep an explicit local ``--in`` selection above persistent config."""
+    cwd_override = os.environ.get("_HERMES_CWD_OVERRIDE", "").strip()
+    backend = os.environ.get("TERMINAL_ENV", "local").strip().lower()
+    if cwd_override and backend == "local":
+        os.environ["TERMINAL_CWD"] = cwd_override
+
+
 def _ensure_terminal_env_bridged() -> None:
     """Backfill TERMINAL_* env vars from config.yaml when no launcher did.
 
@@ -1727,6 +1735,7 @@ def _ensure_terminal_env_bridged() -> None:
     """
     global _terminal_config_bridge_attempted
     if _terminal_config_bridge_attempted:
+        _reassert_invocation_cwd_override()
         return
     _terminal_config_bridge_attempted = True
     try:
@@ -1747,6 +1756,12 @@ def _ensure_terminal_env_bridged() -> None:
             # No terminal section in config.yaml, TERMINAL_ENV not set —
             # backfill from config defaults
             apply_terminal_config_to_env(env=None, override=False)
+
+        # ``hermes chat --in DIR`` is an invocation-scoped local workspace
+        # choice, stronger than the profile's persistent terminal.cwd. The
+        # config bridge above still owns every other terminal key; re-assert
+        # only cwd, and only for the local backend where DIR was validated.
+        _reassert_invocation_cwd_override()
     except Exception:
         # Never let a config problem take the terminal tool down — the
         # historical local default still applies.

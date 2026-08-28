@@ -1984,7 +1984,12 @@ def _default_session_cwd() -> str:
     than ``os.getcwd()`` when the in-memory gateway's process env has no bridged
     ``TERMINAL_CWD``.
     """
-    return _launch_configured_cwd() or os.getenv("TERMINAL_CWD") or os.getcwd()
+    return (
+        os.getenv("_HERMES_CWD_OVERRIDE")
+        or _launch_configured_cwd()
+        or os.getenv("TERMINAL_CWD")
+        or os.getcwd()
+    )
 
 
 def write_json(obj: dict) -> bool:
@@ -2963,6 +2968,9 @@ def _completion_cwd(params: dict | None = None) -> str:
         # A session bound to another profile resolves its workspace from THAT
         # profile's config before falling back to the launch profile's env var.
         or _profile_configured_cwd(_profile_home(params.get("profile")))
+        # An invocation-scoped `--in` selection beats the launch profile's
+        # configured default without changing config.yaml for later sessions.
+        or os.environ.get("_HERMES_CWD_OVERRIDE")
         # The launch profile's dashboard /chat attaches to the dashboard's
         # in-memory gateway, which does NOT inherit the PTY child's bridged
         # TERMINAL_CWD. Read the launch profile's config.yaml directly so a
