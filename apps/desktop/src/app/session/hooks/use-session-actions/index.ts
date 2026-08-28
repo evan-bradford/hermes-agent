@@ -1893,9 +1893,10 @@ export function useSessionActions({
       // Right-clicking a session outside the paginated sidebar window is a cache
       // miss: resolve it (cache → active backend → cross-profile) so the branch
       // is created on the parent's OWNING profile, not whichever is live (#67603).
+      const cached = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+
       const stored =
-        $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ??
-        (sessionProfile ? undefined : await resolveStoredSession(storedSessionId))
+        cached?.profile?.trim() ? cached : ((await resolveStoredSession(storedSessionId)) ?? cached)
 
       const profile = sessionProfile ?? stored?.profile
 

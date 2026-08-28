@@ -7,6 +7,7 @@ import { parseErrorSurface } from '@/lib/error-surface'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
+import { $projectTree } from '@/store/projects'
 import {
   $cronSessions,
   $currentCwd,
@@ -1308,9 +1309,24 @@ export async function resolveStoredSession(
   storedSessionId: string,
   ownerRoute?: SessionProfileRoute
 ): Promise<SessionInfo | undefined> {
-  const cached = [...$sessions.get(), ...$cronSessions.get(), ...$messagingSessions.get()].find(session =>
-    sessionMatchesStoredId(session, storedSessionId)
-  )
+  const projectSessions = $projectTree
+    .get()
+    .flatMap(project => [
+      ...(project.previewSessions ?? []),
+      ...project.repos.flatMap(repo => repo.groups.flatMap(group => group.sessions))
+    ])
+
+  const cachedCandidates = [
+    ...$sessions.get(),
+    ...$cronSessions.get(),
+    ...$messagingSessions.get(),
+    ...projectSessions
+  ].filter(session => sessionMatchesStoredId(session, storedSessionId))
+  // The same conversation can appear in flat Recents and a profile-scoped
+  // project tree. Prefer the self-describing row: an ownerless legacy Recents
+  // copy must not mask the tree row that can route the session safely.
+
+  const cached = cachedCandidates.find(session => session.profile?.trim()) ?? cachedCandidates[0]
 
   if (ownerRoute) {
     const scope = {
