@@ -38,6 +38,7 @@ import {
 // it from here; the canonical definition lives in @/store/session.
 export { sessionMatchesStoredId }
 import { sessionOwnerRouteFromRow, type SessionOwnerScope } from '@/store/session-request-router'
+import { type SessionProfileRoute } from '@/store/session-request-router'
 import { reportBackendContract, reportInstallMethodWarning } from '@/store/updates'
 import type { SessionCreateResponse, SessionInfo, SessionResumeResponse, SessionRuntimeInfo } from '@/types/hermes'
 
