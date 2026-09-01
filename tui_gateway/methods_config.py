@@ -191,6 +191,7 @@ def _(rid, params: dict) -> dict:
 
 
 @method("config.get")
+@_profile_scoped
 def _(rid, params: dict) -> dict:
     key = params.get("key", "")
     if key == "provider":
