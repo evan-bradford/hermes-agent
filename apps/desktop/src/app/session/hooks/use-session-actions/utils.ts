@@ -33,7 +33,6 @@ import {
   setWorkspaceCwdOwner,
   setYoloActive
 } from '@/store/session'
-import type { SessionOwnerScope } from '@/store/session-request-router'
 
 // Re-exported for the many session-actions/tile call sites that already import
 // it from here; the canonical definition lives in @/store/session.
