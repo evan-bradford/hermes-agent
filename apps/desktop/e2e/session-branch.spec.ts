@@ -1,3 +1,6 @@
+import { execFileSync } from 'node:child_process'
+import path from 'node:path'
+
 import {
   buildAppEnv,
   createSandbox,
@@ -11,6 +14,8 @@ import { startMockServer } from './mock-server'
 import { RealSessionBuilder } from './real-session-builder'
 import { expect, test } from './test'
 
+let parentSessionId = ''
+
 const SESSION_LABEL = 'E2E persisted conversation branch parent'
 
 async function setupSeededBackend(): Promise<MockBackendFixture> {
@@ -23,7 +28,7 @@ async function setupSeededBackend(): Promise<MockBackendFixture> {
   const builder = await RealSessionBuilder.start(sandbox.hermesHome)
 
   try {
-    await builder.createSession({ title: SESSION_LABEL, turns: [SESSION_LABEL] })
+    parentSessionId = (await builder.createSession({ title: SESSION_LABEL, turns: [SESSION_LABEL] })).sessionId
   } finally {
     await builder.close()
   }
@@ -71,5 +76,21 @@ test.describe('persisted session branching', () => {
 
     await expect(childLabel).toBeVisible({ timeout: 30_000 })
     await expect(parentLabel).toBeVisible()
+    // The child must survive hydration: an optimistic row alone is not a branch.
+    const readChildren = () =>
+      JSON.parse(
+        execFileSync(
+          path.resolve(import.meta.dirname, '../../../.venv/bin/python'),
+          [
+            '-c',
+            'import json,sqlite3,sys; c=sqlite3.connect("file:"+sys.argv[1]+"?mode=ro",uri=True); print(json.dumps(c.execute("select id, parent_session_id, message_count from sessions where parent_session_id = ?",(sys.argv[2],)).fetchall()))',
+            path.join(fixture.sandbox.hermesHome, 'state.db'),
+            parentSessionId
+          ],
+          { encoding: 'utf8' }
+        )
+      ) as Array<[string, string, number]>
+    await expect.poll(() => readChildren().length).toBe(1)
+    expect(readChildren()[0][2]).toBeGreaterThan(0)
   })
 })
