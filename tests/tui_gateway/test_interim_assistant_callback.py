@@ -50,3 +50,48 @@ def test_agent_cbs_includes_interim_callback_when_enabled():
     assert emitted[0][2]["already_streamed"] is True
 
 
+
+
+def _commentary_tool_turn() -> list[dict]:
+    commentary = "I'll inspect the persisted transcript first."
+    return [
+        {
+            "role": "assistant",
+            "content": "",
+            "reasoning": f"Need to inspect the display projection.\n\n{commentary}",
+            "codex_message_items": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "phase": "commentary",
+                    "content": [{"type": "output_text", "text": commentary}],
+                }
+            ],
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {"name": "read_file", "arguments": '{"path":"README.md"}'},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-1",
+            "tool_name": "read_file",
+            "content": '{"content":"ok"}',
+        },
+    ]
+
+def test_history_projection_keeps_codex_commentary_tool_turn_visible():
+    """Reloading a tool turn must not erase commentary shown live as interim."""
+    from tui_gateway.server import _history_to_messages
+
+    messages = _history_to_messages(_commentary_tool_turn())
+
+    assert messages[0]["role"] == "assistant"
+    assert messages[0]["text"] == "I'll inspect the persisted transcript first."
+    assert messages[0]["reasoning"] == "Need to inspect the display projection."
+    assert messages[1]["role"] == "tool"
+    assert messages[1]["name"] == "read_file"

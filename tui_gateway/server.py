@@ -551,7 +551,7 @@ def _launch_configured_cwd() -> str | None:
 def _default_session_cwd() -> str:
     """Fallback cwd when no explicit / stored / profile cwd (mirrors :func:`_completion_cwd`'s tail so created
     AND resumed sessions land in the configured ``terminal.cwd``)."""
-    return _launch_configured_cwd() or os.getenv("TERMINAL_CWD") or os.getcwd()
+    return os.getenv("_HERMES_CWD_OVERRIDE") or _launch_configured_cwd() or os.getenv("TERMINAL_CWD") or os.getcwd()
 
 
 def write_json(obj: dict) -> bool:
@@ -1989,14 +1989,16 @@ def _session_usage_snapshot(session: dict | None) -> dict:
     return dict(mirror_usage) if isinstance(mirror_usage, dict) else {}
 
 
-def _project_info_for_cwd(cwd: str) -> dict | None:
+def _project_info_for_cwd(cwd: str, profile_home: str | os.PathLike[str] | None = None) -> dict | None:
     """The first-class Project owning ``cwd`` (per-profile projects.db) so TUI status, desktop status bar and
     ``/status`` name the workspace identically. Only explicit named projects resolve."""
     if not str(cwd or "").strip():
         return None
     try:
         from hermes_cli import projects_db as pdb
-        with pdb.connect_closing() as conn:
+        # Background metadata callbacks must use the session owner, not the launch profile.
+        db_path = Path(profile_home) / "projects.db" if profile_home else None
+        with pdb.connect_closing(db_path=db_path) as conn:
             project = pdb.project_for_path(conn, cwd)
         return None if project is None else {
             "id": project.id, "slug": project.slug, "name": project.name, "primary_path": project.primary_path}
@@ -2046,7 +2048,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "yolo": yolo, "approval_mode": approval_mode,
         "tools": dict(mirror.get("tools") or {}) if isinstance(mirror.get("tools"), dict) else {},
         "skills": dict(mirror.get("skills") or {}) if isinstance(mirror.get("skills"), dict) else {},
-        "cwd": cwd, "branch": git_probe.branch(cwd), "project": _project_info_for_cwd(cwd),
+        "cwd": cwd, "branch": git_probe.branch(cwd), "project": _project_info_for_cwd(cwd, sess.get("profile_home")),
         "terminal_backend": _effective_terminal_backend(), "personality": str(personality or ""),
         "running": bool(sess.get("running")), "turn_started_at": _turn_started_at(session),
         "title": _session_live_title(sess, session_key) if session_key else "",
@@ -2377,7 +2379,7 @@ def _resolve_checkpoint_hash(mgr, cwd: str, ref: str) -> str:
 def _lazy_resume_info(cwd: str, *, model: str = "", provider: str = "", profile: str | None = None) -> dict:
     """session.info for a not-yet-built session (session.create's shape); tools/skills land with the deferred build."""
     return {
-        "cwd": cwd, "branch": git_probe.branch(cwd), "project": _project_info_for_cwd(cwd),
+        "cwd": cwd, "branch": git_probe.branch(cwd), "project": _project_info_for_cwd(cwd, _profile_home(profile)),
         "model": model or _resolve_model(), "tools": {}, "skills": {}, "lazy": True,
         "desktop_contract": DESKTOP_BACKEND_CONTRACT, "profile_name": _response_profile_name(profile),
         **({"provider": provider} if provider else {}),
@@ -2631,7 +2633,7 @@ def _fallback_session_info(session: dict) -> dict:
     # above already follows.
     cwd = _session_cwd(session)
     return {
-        "cwd": cwd, "branch": git_probe.branch(cwd), "project": _project_info_for_cwd(cwd), "lazy": True,
+        "cwd": cwd, "branch": git_probe.branch(cwd), "project": _project_info_for_cwd(cwd, session.get("profile_home")), "lazy": True,
         "model": _resolve_model(), "skills": {}, "tools": {}, "desktop_contract": DESKTOP_BACKEND_CONTRACT,
     }
 

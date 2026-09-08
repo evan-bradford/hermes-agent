@@ -1423,13 +1423,18 @@ function projectTreeSessions(): SessionInfo[] {
 // "Best" means self-describing: the same conversation can appear both as an
 // ownerless legacy Recents copy and as a profile-stamped project-tree row, and
 // picking the ownerless one throws away the only routing information we have.
-export function cachedSessionRow(storedSessionId: string): SessionInfo | undefined {
+export function cachedSessionRow(storedSessionId: string, profile?: string): SessionInfo | undefined {
   const candidates = [
     ...$sessions.get(),
     ...$cronSessions.get(),
     ...$messagingSessions.get(),
     ...projectTreeSessions()
-  ].filter(session => sessionMatchesStoredId(session, storedSessionId))
+  ].filter(
+    session =>
+      sessionMatchesStoredId(session, storedSessionId) &&
+      (profile === undefined ||
+        (session.profile?.trim() && normalizeProfileKey(session.profile) === normalizeProfileKey(profile)))
+  )
 
   return (
     candidates.find(session => session.connection_id?.trim()) ??
@@ -1440,8 +1445,29 @@ export function cachedSessionRow(storedSessionId: string): SessionInfo | undefin
 
 export async function resolveStoredSession(
   storedSessionId: string,
-  ownerRoute?: SessionProfileRoute
+  ownerRoute?: SessionOwnerScope
 ): Promise<SessionInfo | undefined> {
+  if (typeof ownerRoute === 'string') {
+    const profile = normalizeProfileKey(ownerRoute)
+    const ownedCached = cachedSessionRow(storedSessionId, profile)
+
+    if (ownedCached) {
+      return ownedCached
+    }
+
+    try {
+      const session = await getSession(storedSessionId, profile)
+      session.profile = profile
+      upsertResolvedSession(session, storedSessionId)
+
+      return session
+    } catch {
+      // An explicit profile must never borrow a same-id row's workspace
+      // from another profile when its own lookup fails.
+      return undefined
+    }
+  }
+
   const cached = cachedSessionRow(storedSessionId)
 
   if (ownerRoute) {

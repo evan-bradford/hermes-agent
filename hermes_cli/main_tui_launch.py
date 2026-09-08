@@ -714,7 +714,8 @@ def _launch_tui(
     provider: Optional[str] = None, toolsets: object = None, skills: object = None,
     verbose: Optional[bool] = None, quiet: bool = False, query: Optional[str] = None,
     image: Optional[str] = None, worktree: bool = False, checkpoints: bool = False,
-    pass_session_id: bool = False, max_turns: Optional[int] = None, accept_hooks: bool = False):
+    pass_session_id: bool = False, max_turns: Optional[int] = None, accept_hooks: bool = False,
+    cwd_override: Optional[str] = None):
     """Replace current process with the TUI."""
     from hermes_cli.main import PROJECT_ROOT
     tui_dir = PROJECT_ROOT / "ui-tui"
@@ -729,6 +730,11 @@ def _launch_tui(
         apply_terminal_config_to_env(env=env)
     except Exception:
         logger.debug("Failed to apply terminal config bridge for TUI launch", exc_info=True)
+    if cwd_override:
+        env["HERMES_CWD"] = cwd_override
+        env["_HERMES_CWD_OVERRIDE"] = cwd_override
+        if str(env.get("TERMINAL_ENV") or "local").strip().lower() == "local":
+            env["TERMINAL_CWD"] = cwd_override
     active_session_fd, active_session_file = tempfile.mkstemp(
         prefix="hermes-tui-active-session-", suffix=".json")
     os.close(active_session_fd)
@@ -740,6 +746,8 @@ def _launch_tui(
         wt_info = _setup_tui_worktree()
         env["HERMES_CWD"] = wt_info["path"]
         env["TERMINAL_CWD"] = wt_info["path"]
+        if cwd_override:
+            env["_HERMES_CWD_OVERRIDE"] = wt_info["path"]
 
     _apply_tui_python_env(env)
 

@@ -1415,7 +1415,7 @@ def _resolve_continue_arg(args, *, use_tui: bool) -> None:
 def _apply_in_dir(args) -> None:
     """--in DIR: chdir first so workspace-scoped lookups key off DIR; pins the session there."""
     in_dir = getattr(args, "in_dir", None)
-    if not in_dir:
+    if not in_dir or getattr(args, "_in_dir_applied", False):
         return
     # Git Bash / MSYS hands us POSIX-style paths (`--in ~` → `/c/Users/x`);
     # translate drive-root spellings to native Windows form. No-op elsewhere.
@@ -1431,6 +1431,10 @@ def _apply_in_dir(args) -> None:
         print(f"Error: cannot enter --in directory {in_dir}: {e}")
         sys.exit(1)
     args.no_restore_cwd = True
+    args._in_dir_applied = True
+    os.environ["_HERMES_CWD_OVERRIDE"] = _target_dir
+    if os.environ.get("TERMINAL_ENV", "local").strip().lower() == "local":
+        os.environ["TERMINAL_CWD"] = _target_dir
 
 
 def _import_foreign_resume(args) -> None:
@@ -1693,6 +1697,7 @@ def cmd_chat(args):
             tui_dev=getattr(args, "tui_dev", False),
             model=getattr(args, "model", None),
             accept_hooks=getattr(args, "accept_hooks", False),
+            cwd_override=os.getcwd() if getattr(args, "_in_dir_applied", False) else None,
             **passthrough,
         )
 
@@ -2719,6 +2724,8 @@ def _should_background_mcp_startup(args) -> bool:
 
 def _prepare_agent_startup(args) -> None:
     """Discover plugins/MCP/hooks for commands that can run an agent turn."""
+    if args.command in {None, "chat"}:
+        _apply_in_dir(args)
     # --yolo chokepoint: HERMES_YOLO_MODE must be set before any discovery
     # below imports tools.approval, which freezes _YOLO_MODE_FROZEN at import.
     # main() sets it earlier too, but other launchers (Termux fast-CLI) reach

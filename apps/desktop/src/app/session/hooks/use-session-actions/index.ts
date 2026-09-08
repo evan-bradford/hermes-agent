@@ -2346,10 +2346,21 @@ export function useSessionActions({
       // cachedSessionRow spans Recents, cron/messaging and the profile-scoped
       // project tree, and prefers the self-describing row — an ownerless legacy
       // Recents copy of the same id must not mask the row carrying the owner.
-      const stored =
-        cachedSessionRow(storedSessionId) ?? (sessionProfile ? undefined : await resolveStoredSession(storedSessionId))
+      const cached = cachedSessionRow(storedSessionId)
+      const explicitProfile = sessionProfile?.trim() || undefined
 
-      const profile = sessionProfile ?? stored?.profile
+      const stored =
+        explicitProfile !== undefined
+          ? (await resolveStoredSession(storedSessionId, explicitProfile)) ??
+            (normalizeProfileKey(explicitProfile) === normalizeProfileKey($activeGatewayProfile.get()) &&
+            !cached?.profile?.trim() && !cached?.connection_id
+              ? cached
+              : undefined)
+          : cached?.profile?.trim() || cached?.connection_id
+            ? cached
+            : ((await resolveStoredSession(storedSessionId)) ?? cached)
+
+      const profile = explicitProfile ?? stored?.profile
 
       // An exact owner from the parent row — connection AND profile. Undefined
       // for an untagged row, which keeps the ambient/profile-only path.

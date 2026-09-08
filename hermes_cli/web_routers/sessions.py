@@ -23,6 +23,7 @@ from hermes_cli.web_server_sessions import _maybe_auto_archive_for_profile, _ses
 from hermes_cli.web_models import (
     BulkDeleteSessions, SessionImport, SessionOwnerBackfill, SessionPrune, SessionRename)
 from hermes_cli.web_routers._common import log as _log, http_failure
+from hermes_cli.web_time import normalize_session_timestamps, normalize_message_timestamp
 from hermes_state import is_malformed_db_error
 from hermes_state_errors import is_transient_sqlite_error
 
@@ -211,6 +212,7 @@ def get_sessions(
             now = time.time()
             row_profile = profile_name or _cron_default_profile()
             for s in sessions:
+                normalize_session_timestamps(s, now=now)
                 s["is_active"] = _is_active(s, now)
                 s["profile"] = row_profile
                 s["is_default_profile"] = row_profile == "default"
@@ -331,6 +333,7 @@ async def search_sessions(
                 except Exception:
                     row = None
                 if row:
+                    normalize_session_timestamps(row, now=now)
                     last_active = row.get("last_active") or row.get("started_at")
                     payload.update({
                         "id": row.get("id") or sid,
@@ -482,6 +485,7 @@ async def get_session_detail(session_id: str, profile: Optional[str] = None):
             raise HTTPException(status_code=404, detail=_NOT_FOUND)
         # Always stamp the owner: unowned default-profile rows made multi-profile
         # clients resolve them to whichever gateway happened to be active.
+        normalize_session_timestamps(session)
         session["profile"] = _serving_profile(profile)
         session["is_default_profile"] = session["profile"] == "default"
         return session
@@ -501,26 +505,26 @@ async def get_session_latest_descendant(session_id: str, profile: Optional[str] 
 
 
 def _project_for_display(messages: list) -> list:
-    """Replace compaction summaries with their display-only projection."""
-    from agent.compaction_display import project_compaction_message_for_display
+    """Project model-only carriers and invalid timestamps without changing stored history."""
+    from agent.compaction_display import (
+        project_codex_commentary_for_display,
+        project_compaction_message_for_display,
+    )
     from agent.context_compressor import is_compaction_summary_message
 
     projected_messages = []
     for message in messages:
-        if not is_compaction_summary_message(message):
-            projected_messages.append(message)
-            continue
-        display_view = project_compaction_message_for_display(message)
         projected = message.copy()
-        if display_view is None:
-            if not projected.get("display_kind"):
-                projected["display_kind"] = "hidden"
-        else:
-            # Keep the physical content for inspection/export compatibility;
-            # Desktop consumes this display-only projection. A legacy hidden
-            # wrapper must not hide a successfully recovered live ask.
-            projected["display_content"] = display_view.get("content")
-            projected.pop("display_kind", None)
+        if is_compaction_summary_message(message):
+            display_view = project_compaction_message_for_display(message)
+            if display_view is None:
+                if not projected.get("display_kind"):
+                    projected["display_kind"] = "hidden"
+            else:
+                projected["display_content"] = display_view.get("content")
+                projected.pop("display_kind", None)
+        projected = project_codex_commentary_for_display(projected)
+        normalize_message_timestamp(projected)
         projected_messages.append(projected)
     return projected_messages
 

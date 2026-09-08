@@ -118,7 +118,7 @@ def _cwd_info(session: dict, cwd: str, branch=None) -> dict:
     if (agent := session.get("agent")) is not None:
         return _session_info(agent, session)
     return {"cwd": cwd, "branch": git_probe.branch(cwd) if branch is None else branch,
-            "project": _project_info_for_cwd(cwd), "lazy": True}
+            "project": _project_info_for_cwd(cwd, session.get("profile_home")), "lazy": True}
 
 
 def _session_row_summary(row: dict, *, tip_row: dict | None = None, resolved_id=None) -> dict:
@@ -356,7 +356,7 @@ def _(rid, params: dict) -> dict:
         "info": {"model": override.get("model") if override else _resolve_model(),
                  **({"provider": override["provider"]} if override.get("provider") else {}),
                  "tools": {}, "skills": {}, "cwd": cwd, "branch": git_probe.branch(cwd),
-                 "project": _project_info_for_cwd(cwd), "lazy": True, "desktop_contract": DESKTOP_BACKEND_CONTRACT,
+                 "project": _project_info_for_cwd(cwd, profile_home), "lazy": True, "desktop_contract": DESKTOP_BACKEND_CONTRACT,
                  "profile_name": _response_profile_name(profile)}})
 
 
@@ -1633,7 +1633,7 @@ def _(rid, params: dict, session: dict) -> dict:
     mirror = _metadata_mirror(session)
     provider = getattr(agent, "provider", None) or mirror.get("provider") or "unknown"
     model = getattr(agent, "model", None) or mirror.get("model") or "(unknown)"
-    project = _project_info_for_cwd(_display_session_cwd(session))
+    project = _project_info_for_cwd(_display_session_cwd(session), session.get("profile_home"))
     title = (meta.get("title") or "").strip()
     lines = [
         "Hermes TUI Status", "", f"Session ID: {key}", f"Path: {display_hermes_home()}",

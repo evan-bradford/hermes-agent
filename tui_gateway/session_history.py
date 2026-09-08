@@ -178,6 +178,7 @@ _HISTORY_ROLES = frozenset({"user", "assistant", "tool", "system"})
 
 
 def _history_to_messages(history: list[dict]) -> list[dict]:
+    from agent.compaction_display import project_codex_commentary_for_display
     messages = []
     tool_call_args = {}
     for m in history:
@@ -186,11 +187,12 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         m = project_compaction_message_for_display(m)
         if m is None:
             continue
+        m = project_codex_commentary_for_display(m)
         role = m.get("role")
         # display_kind="hidden": model-facing scaffolding the "[System:" sniff does not catch.
         if role not in _HISTORY_ROLES or m.get("display_kind") == "hidden":
             continue
-        content_text = _coerce_message_text(m.get("content"))
+        content_text = _coerce_message_text(m.get("display_content") if "display_content" in m else m.get("content"))
         if _is_display_hidden_marker(role, content_text):
             continue
         if role == "assistant" and m.get("tool_calls"):

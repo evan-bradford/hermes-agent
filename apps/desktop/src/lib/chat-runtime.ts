@@ -5,6 +5,7 @@ import type { ClientSessionState, CommandDispatchResponse } from '@/app/types'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { type ChatMessage, type ChatMessagePart, chatMessageText, textPart } from '@/lib/chat-messages'
 import { normalize } from '@/lib/text'
+import { isValidUnixSeconds } from '@/lib/time'
 import type { ComposerAttachment } from '@/store/composer'
 import type { ModelOptionsResponse, SessionInfo } from '@/types/hermes'
 
@@ -417,8 +418,7 @@ export function quickModelOptions(
 // as an absurd "20663d ago". A timestamp-less message is a freshly created
 // optimistic/streaming one, so *now* is the right age anyway.
 export function messageCreatedAt(message: Pick<ChatMessage, 'timestamp'>, nowMs = Date.now()): Date {
-  return typeof message.timestamp === 'number' && Number.isFinite(message.timestamp) && message.timestamp > 0
-    ? new Date(message.timestamp * 1000)
+  return isValidUnixSeconds(message.timestamp, nowMs) ? new Date(message.timestamp * 1000)
     : new Date(nowMs)
 }
 
@@ -436,7 +436,7 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
   }
 
   const timelineMeta =
-    typeof message.timestamp === 'number' && Number.isFinite(message.timestamp) && message.timestamp > 0
+    isValidUnixSeconds(message.timestamp)
       ? { timelineTimestamp: message.timestamp }
       : {}
 

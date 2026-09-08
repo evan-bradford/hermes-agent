@@ -362,6 +362,26 @@ describe('SidebarSessionRow', () => {
     expect(tipTrigger(age)).toBeTruthy()
   })
 
+  it('falls back to started_at when last_active is outside the Date range', () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date(2026, 2, 5, 12, 0, 0))
+    const startedAt = Math.floor(Date.now() / 1000) - 5 * 60
+
+    expect(() =>
+      renderRow(
+        makeSession({
+          last_active: Number.MAX_VALUE,
+          started_at: startedAt,
+          title: 'Recoverable timestamp'
+        })
+      )
+    ).not.toThrow()
+
+    const age = screen.getByText('5m')
+    expect(age.tagName).toBe('TIME')
+    expect(age.getAttribute('datetime')).toBe(new Date(startedAt * 1000).toISOString())
+  })
+
   it('does not render a handoff avatar for a locally-started session', () => {
     const { container } = render(
       <SidebarSessionRow

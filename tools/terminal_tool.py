@@ -526,6 +526,14 @@ def _resolve_task_host_cwd(config: Dict[str, Any], task_id: Optional[str]) -> Op
 _terminal_config_bridge_attempted = False
 
 
+def _reassert_invocation_cwd_override() -> None:
+    """Keep an explicit local ``--in`` selection above persistent config."""
+    cwd_override = os.environ.get("_HERMES_CWD_OVERRIDE", "").strip()
+    backend = os.environ.get("TERMINAL_ENV", "local").strip().lower()
+    if cwd_override and backend == "local":
+        os.environ["TERMINAL_CWD"] = cwd_override
+
+
 def _ensure_terminal_env_bridged() -> None:
     """Backfill TERMINAL_* env vars from config.yaml when no launcher did.
 
@@ -548,6 +556,7 @@ def _ensure_terminal_env_bridged() -> None:
         return
     global _terminal_config_bridge_attempted
     if _terminal_config_bridge_attempted:
+        _reassert_invocation_cwd_override()
         return
     _terminal_config_bridge_attempted = True
     # Never let a config problem take the terminal tool down.
@@ -559,6 +568,7 @@ def _ensure_terminal_env_bridged() -> None:
             apply_terminal_config_to_env(env=None, override=True)
         elif "TERMINAL_ENV" not in os.environ:
             apply_terminal_config_to_env(env=None, override=False)
+    _reassert_invocation_cwd_override()
 
 
 # Default cwd per backend; anything else (container backends, plugins) is "/root".

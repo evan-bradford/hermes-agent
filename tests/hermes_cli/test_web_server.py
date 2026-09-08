@@ -2215,6 +2215,51 @@ class TestWebServerEndpoints:
         contents = [m["content"] for m in resp.json()["messages"]]
         assert contents == ["old q", "old a", "summary", "live q", "live a"]
 
+    def test_get_session_messages_projects_codex_commentary_for_display(self):
+        """The Desktop REST prefetch must preserve commentary shown live."""
+        from hermes_state import SessionDB
+
+        commentary = "I'll inspect the persisted transcript first."
+        db = SessionDB()
+        try:
+            db.create_session(session_id="codex-commentary-display", source="desktop")
+            db.append_message(
+                "codex-commentary-display",
+                "assistant",
+                "",
+                finish_reason="tool_calls",
+                reasoning=f"Need to inspect the display projection.\n\n{commentary}",
+                codex_message_items=[
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "completed",
+                        "phase": "commentary",
+                        "content": [{"type": "output_text", "text": commentary}],
+                    }
+                ],
+                tool_calls=[
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": '{"path":"README.md"}'},
+                    }
+                ],
+            )
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/codex-commentary-display/messages")
+
+        assert resp.status_code == 200
+        [message] = resp.json()["messages"]
+        # Canonical model content stays byte-stable; only the display projection
+        # promotes commentary back into the transcript.
+        assert message["content"] == ""
+        assert message["display_content"] == commentary
+        assert message["reasoning"] == "Need to inspect the display projection."
+
+
     def test_get_session_messages_projects_and_dedupes_composite_carrier(self):
         from agent.context_compressor import (
             HISTORICAL_TASK_HEADING,

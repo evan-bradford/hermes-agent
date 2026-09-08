@@ -1,5 +1,13 @@
 import { type SidebarSessionEntry } from '@/lib/session-branch-tree'
-import { calendarBucket, HOUR, localeWeekStartDay, MINUTE, SECOND, type SessionBucket } from '@/lib/time'
+import {
+  calendarBucket,
+  firstValidUnixSeconds,
+  HOUR,
+  localeWeekStartDay,
+  MINUTE,
+  SECOND,
+  type SessionBucket
+} from '@/lib/time'
 
 // A flat list row is either a divider or a session entry. Interleaving these
 // lets the flat list (and the virtualizer) render separators inline without a
@@ -12,8 +20,8 @@ export type SidebarListRow =
 
 // The row's own age label reads from `last_active || started_at`; bucket off the
 // same value so a divider lines up with what the row actually shows.
-const recencyMs = (entry: SidebarSessionEntry): number =>
-  (entry.session.last_active || entry.session.started_at || 0) * SECOND
+const recencyMs = (entry: SidebarSessionEntry, nowMs = Date.now()): number =>
+  firstValidUnixSeconds([entry.session.last_active, entry.session.started_at], nowMs) * SECOND
 
 // Aim the head at "the most recent handful". A break shorter than
 // MIN_RUN_BREAK_MS never counts as one — that would slice a rapid-fire burst —
@@ -44,7 +52,7 @@ const MAX_RUN_GAP_MS = 8 * HOUR
 function headRunCutoffMs(entries: readonly SidebarSessionEntry[], nowMs: number, weekStartsOn: number): number {
   const times = entries
     .filter(entry => !entry.branchStem)
-    .map(recencyMs)
+    .map(entry => recencyMs(entry, nowMs))
     .sort((a, b) => b - a)
 
   let bestIdx = -1
@@ -113,7 +121,7 @@ export function groupEntriesByRecency(
       continue
     }
 
-    const ms = recencyMs(entry)
+    const ms = recencyMs(entry, nowMs)
 
     // Head-run sessions are never labelled.
     if (ms >= cutoff) {

@@ -1841,6 +1841,10 @@ function BranchHarness({
 }
 
 describe('branchStoredSession desktop source tagging', () => {
+  beforeEach(() => {
+    $projectTree.set([])
+  })
+
   afterEach(() => {
     cleanup()
     setSessions([])
@@ -2110,6 +2114,103 @@ describe('branchStoredSession desktop source tagging', () => {
 
   // An untagged row (single-backend users, the overwhelmingly common case)
   // must keep the ambient path exactly as before — no behaviour change.
+  it('uses metadata from the explicitly forwarded owner when two profiles share a session id', async () => {
+    setSessions([
+      storedSession({
+        cwd: '/repo/default-worktree',
+        id: 'stored-parent',
+        message_count: 1,
+        profile: 'default'
+      })
+    ])
+    $projectTree.set([
+      {
+        id: 'p_work',
+        label: 'Work',
+        path: '/repo/work-worktree',
+        previewSessions: [
+          storedSession({
+            cwd: '/repo/work-worktree',
+            id: 'stored-parent',
+            message_count: 1,
+            profile: 'work'
+          })
+        ],
+        repos: [],
+        sessionCount: 1
+      } as never
+    ])
+    vi.mocked(getAllSessionMessages).mockResolvedValue({
+      messages: [{ content: 'branch me', role: 'user', timestamp: 1 }],
+      session_id: 'stored-parent'
+    } as never)
+
+    let createParams: Record<string, unknown> | undefined
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.create') {
+        createParams = params
+
+        return { session_id: 'branch-runtime', stored_session_id: 'branch-stored' } as never
+      }
+
+      return {} as never
+    })
+
+    let branchStoredSession: ((storedSessionId: string, profile?: string) => Promise<boolean>) | null = null
+
+    render(<BranchHarness onReady={branch => (branchStoredSession = branch)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(branchStoredSession).not.toBeNull())
+
+    await expect(branchStoredSession!('stored-parent', 'work')).resolves.toBe(true)
+
+    expect(getAllSessionMessages).toHaveBeenCalledWith('stored-parent', 'work')
+    expect(createParams).toMatchObject({
+      cwd: '/repo/work-worktree',
+      parent_session_id: 'stored-parent',
+      profile: 'work'
+    })
+  })
+
+  it('keeps cached parent metadata when the explicit profile is the launch profile', async () => {
+    // Launch/default rows are stamped `profile="default"` by the fix's
+    // stamp_profile, so an ownerless cached copy must not lose cwd/parent when
+    // the explicit profile IS the launch profile and the by-id getSession miss
+    // (this is the fail-closed path: explicit != active would keep undefined,
+    // but "default" is the very profile we are already on).
+    setSessions([storedSession({ cwd: '/repo/default-worktree', id: 'stored-parent', message_count: 1 })])
+    vi.mocked(getSession).mockRejectedValueOnce(new Error('404: Session not found'))
+    vi.mocked(getAllSessionMessages).mockResolvedValue({
+      messages: [{ content: 'branch me', role: 'user', timestamp: 1 }],
+      session_id: 'stored-parent'
+    } as never)
+
+    let createParams: Record<string, unknown> | undefined
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.create') {
+        createParams = params
+
+        return { session_id: 'branch-runtime', stored_session_id: 'branch-stored' } as never
+      }
+
+      return {} as never
+    })
+
+    let branchStoredSession: ((storedSessionId: string, profile?: string) => Promise<boolean>) | null = null
+
+    render(<BranchHarness onReady={branch => (branchStoredSession = branch)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(branchStoredSession).not.toBeNull())
+
+    await expect(branchStoredSession!('stored-parent', 'default')).resolves.toBe(true)
+
+    expect(createParams).toMatchObject({
+      cwd: '/repo/default-worktree',
+      parent_session_id: 'stored-parent',
+      profile: 'default'
+    })
+  })
+
   it('keeps an untagged parent branch on the ambient socket', async () => {
     let createParams: Record<string, unknown> | undefined
 

@@ -7,6 +7,30 @@ export const MINUTE = 60_000
 export const HOUR = 3_600_000
 export const DAY = 86_400_000
 
+// A timestamp sourced from durable state is data, not a valid Date by
+// construction. One corrupt SQLite number used to reach toISOString() in the
+// session row and crash the complete Sessions surface with "Invalid time
+// value". Validate once and let presentation callers share the same fallback.
+export function isValidUnixSeconds(value: unknown, nowMs = Date.now()): value is number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    return false
+  }
+
+  const ms = value * SECOND
+
+  return Number.isFinite(ms) && ms <= nowMs + DAY && !Number.isNaN(new Date(ms).getTime())
+}
+
+export function firstValidUnixSeconds(values: readonly unknown[], nowMs = Date.now()): number {
+  for (const value of values) {
+    if (isValidUnixSeconds(value, nowMs)) {
+      return value
+    }
+  }
+
+  return nowMs / SECOND
+}
+
 // ── Absolute date/time formatters ──────────────────────────────────────────
 // `hh:mm` clock (thread today/yesterday lines).
 export const fmtClock = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' })

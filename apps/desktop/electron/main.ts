@@ -155,7 +155,7 @@ import {
 } from './connection-registry'
 import type { RosterProfileMetadata } from './connection-registry'
 import { describeCrashReason, installCrashForensics } from './crash-forensics'
-import { adoptServedDashboardToken } from './dashboard-token'
+import { adoptServedDashboardToken, resolveServedDashboardToken } from './dashboard-token'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine } from './desktop-log-line'
 import { resolveDesktopRemoteRoute, v1SshTerminalPoolKey } from './desktop-remote-route'
@@ -232,6 +232,7 @@ import { createHudSnapShortcut } from './hud-snap-shortcut'
 import { buildHudWindowUrl } from './hud-url'
 import { resolveHudWindowing } from './hud-windowing'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
+import { reconcileLoopbackSessionToken, refreshLoopbackSessionToken } from './loopback-token-refresh'
 import { ensureMainWindow } from './main-window-lifecycle'
 import {
   assertManagedUpdatePreflightClear,
@@ -11032,22 +11033,9 @@ async function fetchJsonForProfile(profile, path) {
 // Issue an arbitrary method against a profile's resolved backend, parsed JSON.
 async function requestJsonForProfile(profile: string, path: string, method: string, body?: string) {
   const conn = await ensureBackend(profile)
-  const url = `${conn.baseUrl}${path}`
   const opts = { method, body, timeoutMs: DEFAULT_FETCH_TIMEOUT_MS }
 
-  if (conn.authMode === 'oauth') {
-    // Native RFC 8252 flow: authenticate with the bearer token (cookieless)
-    // when we hold one for this gateway; otherwise use the cookie partition.
-    const nativeAt = await ensureNativeAccessToken(conn.baseUrl).catch(() => null)
-
-    if (nativeAt) {
-      return fetchJson(url, null, { ...opts, bearer: nativeAt, headers: conn.headers })
-    }
-
-    return fetchJsonViaOauthSession(url, { ...opts, headers: conn.headers })
-  }
-
-  return fetchJson(url, conn.token, { ...opts, headers: conn.headers })
+  return fetchJsonForBackend(conn, path, opts)
 }
 
 async function probeRemoteAuthMode(rawUrl) {
@@ -12937,7 +12925,28 @@ async function startHermes() {
       }
 
       await advanceBootProgress('backend.remote', `Connecting to remote Hermes backend at ${remote.baseUrl}`, 24)
-      await waitForHermes(remote.baseUrl, remote.token, undefined, remote.authMode, remote.headers)
+
+      try {
+        await waitForHermes(remote.baseUrl, remote.token, undefined, remote.authMode, remote.headers)
+      } catch (error) {
+        // The custom env route is commonly a loopback SSH tunnel. Its dashboard
+        // token rotates when the remote service restarts, so retry readiness
+        // once with the token currently injected by that same loopback page.
+        if (!(await refreshRemoteLoopbackToken(remote, error))) {
+          throw error
+        }
+
+        await waitForHermes(remote.baseUrl, remote.token, undefined, remote.authMode, remote.headers)
+      }
+
+      // Readiness can be public, so it may succeed even when this app was
+      // launched with a dashboard token that rotated during a backend restart.
+      // Reconcile before serializing the descriptor for the renderer; otherwise
+      // its first WebSocket URL permanently contains the stale token even if a
+      // later main-process REST request learns the replacement.
+      if (await reconcileRemoteLoopbackToken(remote)) {
+        await waitForHermes(remote.baseUrl, remote.token, undefined, remote.authMode, remote.headers)
+      }
 
       // Second async boundary: the health probe itself can outlive the
       // attempt. A late success here must not publish a stale descriptor.
@@ -15954,6 +15963,76 @@ async function getJsonForBackend(descriptor, path, opts: any = {}) {
   return fetchJsonForBackend(descriptor, path, opts)
 }
 
+/**
+ * Adopt a rotated dashboard token only for the env-selected loopback route.
+ * The unauthenticated index token is part of the loopback dashboard contract
+ * (and is already how the user's launcher obtains its initial credential).
+ * Never apply this to saved remotes, non-loopback hosts, OAuth, or non-401s.
+ */
+async function refreshRemoteLoopbackToken(descriptor, error) {
+  let token
+
+  try {
+    token = await refreshLoopbackSessionToken(descriptor, error, {
+      resolveToken: (baseUrl, fallbackToken) =>
+        resolveServedDashboardToken(baseUrl, fallbackToken, {
+          rememberLog,
+          timeoutMs: DEFAULT_FETCH_TIMEOUT_MS
+        })
+    })
+  } catch (refreshError: any) {
+    rememberLog(`[remote] loopback session-token refresh failed: ${refreshError.message}`)
+
+    return false
+  }
+
+  if (!token) {
+    return false
+  }
+
+  descriptor.token = token
+  descriptor.wsUrl = buildGatewayWsUrl(descriptor.baseUrl, token)
+  process.env.HERMES_DESKTOP_REMOTE_TOKEN = token
+  rememberRemoteWsHeaders(descriptor.wsUrl, descriptor.headers)
+  rememberLog('[remote] adopted rotated loopback dashboard session token after HTTP 401')
+
+  return true
+}
+
+/**
+ * Reconcile the env-selected loopback token before the initial connection
+ * descriptor crosses the IPC boundary into the renderer.
+ */
+async function reconcileRemoteLoopbackToken(descriptor) {
+  let token
+
+  try {
+    token = await reconcileLoopbackSessionToken(descriptor, {
+      resolveToken: (baseUrl, fallbackToken) =>
+        resolveServedDashboardToken(baseUrl, fallbackToken, {
+          rememberLog,
+          timeoutMs: DEFAULT_FETCH_TIMEOUT_MS
+        })
+    })
+  } catch (reconcileError: any) {
+    rememberLog(`[remote] loopback session-token boot reconciliation failed: ${reconcileError.message}`)
+
+    throw reconcileError
+  }
+
+  if (!token) {
+    return false
+  }
+
+  descriptor.token = token
+  descriptor.wsUrl = buildGatewayWsUrl(descriptor.baseUrl, token)
+  process.env.HERMES_DESKTOP_REMOTE_TOKEN = token
+  rememberRemoteWsHeaders(descriptor.wsUrl, descriptor.headers)
+  rememberLog('[remote] adopted rotated loopback dashboard session token during boot')
+
+  return true
+}
+
 // Any-method REST call against a resolved backend descriptor — the descriptor
 // analogue of the hermes:api handler's own auth split: OAuth backends prefer a
 // native bearer (cookieless RFC 8252 flow) and fall back to the OAuth cookie
@@ -15992,13 +16071,27 @@ async function fetchJsonForBackend(
     })
   }
 
-  return fetchJson(url, descriptor.token, {
-    method: opts.method,
-    body: opts.body,
-    upload: opts.upload,
-    timeoutMs: opts.timeoutMs,
-    headers: descriptor.headers
-  })
+  const request = () =>
+    fetchJson(url, descriptor.token, {
+      method: opts.method,
+      body: opts.body,
+      upload: opts.upload,
+      timeoutMs: opts.timeoutMs,
+      headers: descriptor.headers
+    })
+
+  try {
+    return await request()
+  } catch (error) {
+    // HTTP 401 is produced by the token middleware before route dispatch, so
+    // retrying once with the freshly served token cannot double-submit a
+    // mutation. Other failures retain the normal verb-gated retry policy.
+    if (!(await refreshRemoteLoopbackToken(descriptor, error))) {
+      throw error
+    }
+
+    return request()
+  }
 }
 
 ipcMain.handle('hermes:connection-config:probe', async (_event, rawUrl) => probeRemoteAuthMode(rawUrl))
@@ -16688,7 +16781,7 @@ async function handleHermesApiRequest(request) {
         })
       }
     } else {
-      response = await fetchJson(url, connection.token, {
+      response = await fetchJsonForBackend(connection, apiRoute.requestPath, {
         method: request?.method,
         body: request?.body,
         upload: request?.upload,

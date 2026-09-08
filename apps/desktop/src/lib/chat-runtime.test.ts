@@ -240,6 +240,7 @@ describe('messageCreatedAt', () => {
   it('treats a zero / non-finite timestamp as absent', () => {
     expect(messageCreatedAt({ timestamp: 0 }, NOW).getTime()).toBe(NOW)
     expect(messageCreatedAt({ timestamp: Number.NaN }, NOW).getTime()).toBe(NOW)
+    expect(messageCreatedAt({ timestamp: Number.MAX_VALUE }, NOW).getTime()).toBe(NOW)
   })
 })
 

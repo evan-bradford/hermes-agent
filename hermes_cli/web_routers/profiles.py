@@ -27,6 +27,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from fastapi import APIRouter, HTTPException, Query
 
 from hermes_cli.web_deps import late
+from hermes_cli.web_time import normalize_session_timestamps
 from hermes_cli.web_server_config import _apply_main_model_assignment, _normalize_main_model_assignment
 from hermes_cli.web_server_gateway import _strip_session_list_rows
 from hermes_cli.web_server_profiles import (
@@ -189,6 +190,7 @@ def _tag_rows(rows: List[Dict[str, Any]], name: str, now: float) -> List[Dict[st
     """Stamp session rows with their owning profile and the 300s active heuristic; SQLite
     stores flags as 0/1 and the sidebar needs booleans."""
     for s in rows:
+        normalize_session_timestamps(s, now=now)
         s["profile"] = name
         s["is_default_profile"] = name == "default"
         s["is_active"] = (

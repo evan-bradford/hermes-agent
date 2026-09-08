@@ -253,6 +253,33 @@ def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
     assert env["NODE_ENV"] == "production"
 
 
+def test_launch_tui_explicit_cwd_overrides_profile_terminal_cwd(
+    monkeypatch, main_mod, tmp_path
+):
+    target = tmp_path / "target"
+    target.mkdir()
+    captured = {}
+
+    monkeypatch.setattr(
+        main_tui_launch,
+        "_make_tui_argv",
+        lambda tui_dir, tui_dev: (["node", "dist/entry.js"], Path(".")),
+    )
+
+    def fake_call(argv, cwd=None, env=None):
+        captured["env"] = env
+        return 1
+
+    monkeypatch.setattr(main_mod.subprocess, "call", fake_call)
+
+    with pytest.raises(SystemExit):
+        main_mod._launch_tui(cwd_override=str(target))
+
+    assert captured["env"]["HERMES_CWD"] == str(target)
+    assert captured["env"]["TERMINAL_CWD"] == str(target)
+    assert captured["env"]["_HERMES_CWD_OVERRIDE"] == str(target)
+
+
 
 
 def test_make_tui_argv_dev_prebuilds_hermes_ink(monkeypatch, main_mod, tmp_path):
