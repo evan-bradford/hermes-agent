@@ -1108,7 +1108,12 @@ def _codex_catalog(normalized: str, force_refresh: bool) -> list[str]:
 
         access_token = resolve_codex_runtime_credentials(refresh_if_expiring=True).get("api_key")
     except Exception:
-        access_token = None
+        # Named profiles can inherit the global credential pool without a local
+        # Codex auth entry. Use the existing pool-aware resolver, as chat does,
+        # so account-gated models are discovered with the same credentials.
+        from agent.auxiliary_client import _read_codex_access_token
+
+        access_token = _read_codex_access_token()
     return get_codex_model_ids(access_token=access_token)
 
 
