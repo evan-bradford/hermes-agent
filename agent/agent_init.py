@@ -1068,10 +1068,21 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
     )
 
     agent.valid_tool_names = {tool["function"]["name"] for tool in agent.tools} if agent.tools else set()
-    # Kanban guidance is session-static (kanban_show iff HERMES_KANBAN_TASK); resolve once.
+    # Kanban guidance is session-static (assigned task + kanban tools); resolve once.
+    #
+    # Gated on HERMES_KANBAN_TASK, not merely on tool presence: `kanban_show` is a member
+    # of the composite `hermes-cli` toolset, so any profile selecting that composite (or no
+    # toolsets at all) exposes the kanban tools to ordinary INTERACTIVE chats. Keying the
+    # protocol off tool presence therefore injected ~6k chars of dispatcher-worker contract
+    # ("You have been assigned ONE task", "you are running headless", "do not call clarify")
+    # into sessions that have no task and do have a live user — a token tax plus a real
+    # behavioural contradiction. The env var is set by the dispatcher for both workers and
+    # orchestrator cards, so this keeps every genuinely-dispatched process fully briefed.
     from agent.prompt_builder import KANBAN_GUIDANCE
     agent._kanban_worker_guidance = (
-        KANBAN_GUIDANCE if "kanban_show" in agent.valid_tool_names else ""
+        KANBAN_GUIDANCE
+        if ("kanban_show" in agent.valid_tool_names and os.environ.get("HERMES_KANBAN_TASK"))
+        else ""
     )
     if agent.quiet_mode:
         return

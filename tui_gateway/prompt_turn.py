@@ -706,6 +706,10 @@ def _recover_turn_exception(sid: str, session: dict, st: _TurnRun, e: BaseExcept
 
 def _finish_turn(sid: str, session: dict, st: _TurnRun) -> None:
     """Finally-path of the turn: release everything, then the "tui turn finished" bookend."""
+    # The row is now guaranteed created by the turn's first run_conversation; backfill git
+    # metadata if the init-time claim had nothing to claim (new sessions, lazy rows).
+    with contextlib.suppress(Exception):
+        _ensure_session_git_meta(session)
     # Drop both pre-turn history snapshots before asking glibc to return pages (a test
     # inspects these two locals by name).
     history, run_kwargs = st.history, st.run_kwargs

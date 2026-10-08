@@ -282,9 +282,12 @@ def _tool_guidance_block(agent: Any) -> Optional[str]:
         elif getattr(agent, "_user_profile_enabled", True):
             memory_guidance = USER_PROFILE_GUIDANCE
     # Kanban lifecycle: resolved once at __init__ (_kanban_worker_guidance);
-    # the kanban_show fallback covers code paths that bypass agent_init.
+    # the fallback covers code paths that bypass agent_init. It must apply the SAME
+    # HERMES_KANBAN_TASK gate as agent_init: `kanban_show` ships inside the composite
+    # `hermes-cli` toolset, so tool presence alone is true in ordinary interactive chats
+    # and would leak the dispatcher-worker contract to sessions with a live user.
     _kanban_guidance = getattr(agent, "_kanban_worker_guidance", None)
-    if _kanban_guidance is None and "kanban_show" in names:
+    if _kanban_guidance is None and "kanban_show" in names and os.environ.get("HERMES_KANBAN_TASK"):
         _kanban_guidance = KANBAN_GUIDANCE
     tool_guidance = [
         memory_guidance,

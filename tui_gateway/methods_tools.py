@@ -259,6 +259,17 @@ def _mcp_reload_confirm_required() -> bool:
 @_rpc("reload.mcp", 5015)
 def _(rid, params: dict) -> dict:
     session = _sessions.get(params.get("session_id", ""))
+    # Desktop sends session_id, not profile; match tools.configure's scope boundary.
+    home = (session or {}).get("profile_home")
+    scopes = _bind_build_profile_scopes(home) if home else None
+    try:
+        return _mcp_reload_for_session(rid, params, session)
+    finally:
+        if scopes is not None:
+            _release_build_profile_scopes(scopes)
+
+
+def _mcp_reload_for_session(rid, params: dict, session) -> dict:
     # Prompt-cache invalidation gate: without confirm=true honour ``approvals.mcp_reload_confirm``
     # (Ink prints ``message`` and re-invokes with confirm=true, or flips the config).
     if not bool(params.get("confirm", False)) and _mcp_reload_confirm_required():
@@ -289,7 +300,8 @@ def _(rid, params: dict) -> dict:
             return
         agent = session["agent"]
         try:  # enabled_override re-resolves toolsets so a server enabled in config this session is picked up
-            _mcp_agent.refresh_agent_mcp_tools(agent, enabled_override=_load_enabled_toolsets(), quiet_mode=True)
+            _mcp_agent.refresh_agent_mcp_tools(
+                agent, enabled_override=_load_enabled_toolsets(platform=_session_source(session)), quiet_mode=True)
         except Exception as _exc:
             logger.warning("Failed to refresh cached agent tools after /reload-mcp: %s", _exc)
         _emit("session.info", params.get("session_id", ""), _session_info(agent, session))

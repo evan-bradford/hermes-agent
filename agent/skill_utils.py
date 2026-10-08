@@ -5,7 +5,9 @@ import ast
 import logging
 import os
 import re
+import subprocess
 import sys
+from functools import lru_cache
 from pathlib import Path, PurePath
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
@@ -414,20 +416,26 @@ _PROJECT_ROOT_MAX_DEPTH = 64  # walk-up bound for pathological cwds
 
 def find_project_root(start: Optional[Path] = None) -> Optional[Path]:
     """Nearest ancestor containing ``.git`` (dir or worktree file), or None.
-    Without *start*, the surface's ``TERMINAL_CWD`` wins over process cwd so
+    Without *start*, the surface's configured working directory wins over process cwd so
     cron/API surfaces inherit an interactive trust decision by project identity.
 
-    When *start* is not given, the surface's working directory wins over the process cwd: ``TERMINAL_CWD``
-    is the same per-surface workdir the terminal tool and cron jobs use (a cron job sets it from its per-job
-    ``workdir`` without chdir'ing the scheduler process). This is what lets non-interactive surfaces inherit
-    a prior interactive trust decision by project identity — and a surface with no workdir in a trusted repo
-    simply resolves no project and loads nothing (#48975).
+    When *start* is not given, resolution goes through ``agent.runtime_cwd.resolve_agent_cwd()``,
+    which is the single source of truth every other cwd consumer uses: the per-session
+    ``_SESSION_CWD`` override FIRST, then the surface's ``TERMINAL_CWD``, then the process cwd.
+    Reading ``scope_terminal_cwd()`` directly skips the session override, which breaks exactly
+    where it matters most — a multiplexed gateway serving many sessions. There the per-turn
+    terminal scope deliberately yields an EMPTY ``TERMINAL_CWD`` when the profile's
+    ``terminal.cwd`` is the ``.`` sentinel, so the direct read fell through to ``Path.cwd()``:
+    the GATEWAY's own launch directory (``~/.hermes``), not the chat's workspace. Every desktop
+    session then resolved no project root at all and silently loaded zero project skills, while
+    a fresh-process probe in the same worktree resolved correctly and reported health.
+    A cron job that sets ``TERMINAL_CWD`` without chdir'ing the scheduler still works: that path
+    sets no session override, so resolution falls through to ``TERMINAL_CWD`` as before (#48975).
     """
     try:
         if start is None:
-            from agent.runtime_cwd import scope_terminal_cwd
-            env_cwd = scope_terminal_cwd()
-            start = Path(env_cwd) if env_cwd else Path.cwd()
+            from agent.runtime_cwd import resolve_agent_cwd
+            start = resolve_agent_cwd()
         cur = Path(start).resolve()
     except OSError:
         return None
@@ -457,12 +465,92 @@ def _project_trusted_dirs_from_config() -> Set[Path]:
     return result
 
 
-def is_project_root_trusted(root: Path) -> bool:
-    """True when *root* is listed in ``skills.trusted_project_dirs``."""
+class _GitProbeFailed(Exception):
+    """git could not say whether a root is a linked worktree (never cached)."""
+
+
+def _linked_worktree_parent(root: Path) -> Optional[Path]:
+    """Main checkout of *root* when *root* is a LINKED worktree, else None.
+
+    ``--git-common-dir`` is the shared ``.git`` of the owning repository. Git prints it
+    as a bare relative ``.git`` from a main checkout and as an absolute path from a
+    linked worktree, which is exactly the discriminator needed here (a main checkout
+    must never "inherit" from itself).
+
+    Raises ``_GitProbeFailed`` when git cannot answer, so "not a linked worktree" (safe
+    to cache) stays distinct from "unknown" (must be retried).
+    """
     try:
-        return Path(root).resolve() in _project_trusted_dirs_from_config()
+        proc = subprocess.run(
+            ["git", "rev-parse", "--git-common-dir"],
+            cwd=str(root), capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise _GitProbeFailed(str(exc)) from exc
+    out = (proc.stdout or "").strip()
+    if proc.returncode != 0 or not out:
+        raise _GitProbeFailed(f"git rev-parse --git-common-dir exited {proc.returncode}")
+    common = Path(out)
+    if not common.is_absolute():
+        return None  # main checkout
+    try:
+        parent = common.resolve().parent
+    except OSError as exc:
+        raise _GitProbeFailed(str(exc)) from exc
+    return parent if parent != Path(root).resolve() else None
+
+
+@lru_cache(maxsize=256)
+def _worktree_parent_cached(root_str: str) -> Optional[Path]:
+    """Process-wide cache of :func:`_linked_worktree_parent` — a FILESYSTEM fact only.
+
+    What is cached must not depend on the active profile. One backend process serves
+    every profile, so caching the trust VERDICT keyed by path let whichever profile asked
+    first answer for all of them: a lookup made under a profile that trusts nothing pinned
+    the lane untrusted for the life of the process, and the profile that DOES trust the
+    repo then silently loaded no project skills. A failed git probe raises instead of
+    returning, and ``lru_cache`` does not cache exceptions, so a lookup that races
+    ``git worktree add`` is retried rather than pinned.
+    """
+    return _linked_worktree_parent(Path(root_str))
+
+
+def _inherits_trust_from_parent_repo(root_str: str) -> bool:
+    """Whether *root* is a linked worktree of an explicitly trusted repository.
+
+    Creating a worktree is not a new trust decision: it is the same repository the user
+    already vouched for, and its ``.hermes/skills`` are the same tracked files at another
+    revision. Without this, every worktree silently drops repo-only skills while still
+    loading same-named profile skills, so the session reads as healthy and an orientation
+    or routing skill that lives ONLY in the repo just disappears.
+
+    Resolved at read time so it holds for every creation path (desktop "New worktree",
+    ``hermes -w``, a bare ``git worktree add``) rather than only the ones Hermes owns.
+    Only the git lookup is cached (see :func:`_worktree_parent_cached`); the trust list is
+    read from the ACTIVE profile's config on every call, so the verdict is per profile.
+    """
+    try:
+        parent = _worktree_parent_cached(root_str)
+    except _GitProbeFailed:
+        return False
+    if parent is None:
+        return False
+    try:
+        return parent.resolve() in _project_trusted_dirs_from_config()
     except OSError:
         return False
+
+
+def is_project_root_trusted(root: Path) -> bool:
+    """True when *root* is listed in ``skills.trusted_project_dirs``, or is a linked
+    worktree of a listed repository (see :func:`_inherits_trust_from_parent_repo`)."""
+    try:
+        resolved = Path(root).resolve()
+    except OSError:
+        return False
+    if resolved in _project_trusted_dirs_from_config():
+        return True
+    return _inherits_trust_from_parent_repo(str(resolved))
 
 
 def _candidate_project_skills_dirs(root: Path) -> List[Path]:

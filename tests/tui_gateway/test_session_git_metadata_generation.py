@@ -70,3 +70,58 @@ def test_missing_db_claim_never_starts_git_probe(monkeypatch):
 
     assert generation is None
     assert probed == []
+
+
+class _FakeDB:
+    def __init__(self, row):
+        self._row = row
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def get_session(self, session_id):
+        return dict(self._row) if self._row else None
+
+    def update_session_cwd(self, session_id, cwd, git_branch=None, git_repo_root=None, replace_git_meta=False):
+        return 42
+
+    def publish_session_git_metadata(self, session_id, cwd, generation, branch, root):
+        return True
+
+
+def _run_backstop(monkeypatch, row, publish=None):
+    calls = []
+
+    def fake_claim(session, cwd, *, db=None):
+        calls.append(cwd)
+        return 42 if row else None
+
+    monkeypatch.setattr(server, "_session_db", lambda session: _FakeDB(row))
+    monkeypatch.setattr(server, "_persist_session_cwd_and_schedule_git_meta", fake_claim)
+    session = {"session_key": "s1", "cwd": "/repo"}
+    server._ensure_session_git_meta(session)
+    return calls, session
+
+
+def test_backstop_claims_when_row_has_no_metadata(monkeypatch):
+    row = {"git_branch": None, "git_metadata_generation": 0, "cwd": "/repo"}
+    calls, session = _run_backstop(monkeypatch, row)
+    assert calls == ["/repo"]
+    assert session["_git_meta_settled"] is True
+
+
+def test_backstop_skips_rows_already_published_or_claimed(monkeypatch):
+    for row in ({"git_branch": "main", "git_metadata_generation": 1},
+                {"git_branch": "", "git_metadata_generation": 3}):
+        calls, session = _run_backstop(monkeypatch, dict(row))
+        assert calls == []
+        assert session.get("_git_meta_settled") is True
+
+
+def test_backstop_retries_while_row_absent(monkeypatch):
+    calls, session = _run_backstop(monkeypatch, None)
+    assert calls == []
+    assert not session.get("_git_meta_settled")  # no claim, no settle: next turn retries

@@ -512,6 +512,34 @@ def _persist_session_cwd_and_schedule_git_meta(session: dict, cwd: str, *, db=No
     return generation
 
 
+def _ensure_session_git_meta(session: dict) -> None:
+    """Row-birth backstop for the async git-metadata claim.
+
+    A new session's DB row is created lazily INSIDE the first ``run_conversation``
+    (``AIAgent._ensure_db_session``), while ``_hydrate_session_cwd`` claims the generation at
+    ``_init_session`` time — before any row exists, so the claim no-ops and the probe thread
+    never starts. Such rows land with cwd (+ a sidebar-backfilled root) but NULL git_branch
+    forever, and the desktop worktree fold drops them into a synthetic "main" lane that
+    vanishes on drill-in. Called at turn end (row guaranteed present for any session that ran
+    a turn): claim the generation now unless metadata was already published.
+    """
+    session_key = session.get("session_key", "")
+    if not session_key or session.get("_git_meta_settled"):
+        return
+    try:
+        with _session_db(session) as db:
+            row = db.get_session(session_key) if db is not None else None
+            if row is None:
+                return  # store degraded / row still absent — retry next turn
+            if str(row.get("git_branch") or "").strip() or (row.get("git_metadata_generation") or 0) >= 1:
+                session["_git_meta_settled"] = True  # published (or claim won) by any earlier path
+                return
+            if _persist_session_cwd_and_schedule_git_meta(session, _session_cwd(session), db=db) is not None:
+                session["_git_meta_settled"] = True
+    except Exception:
+        logger.debug("failed to backstop session git metadata", exc_info=True)
+
+
 def _set_session_cwd(session: dict, cwd: str) -> str:
     from hermes_constants import translate_cwd_for_wsl_backend
     cwd = translate_cwd_for_wsl_backend(str(cwd))
