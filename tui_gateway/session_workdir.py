@@ -57,7 +57,8 @@ def _completion_cwd(params: dict | None = None) -> str:
     )
     raw = str(client_cwd or session_cwd or _profile_workspace_cwd(profile_home)
               # A named ssh profile never inherits the LAUNCH profile's host cwd: its remote default is ~.
-              or ("~" if named_ssh else "") or named_local_default or _launch_configured_cwd()
+              or ("~" if named_ssh else "") or named_local_default
+              or os.environ.get("_HERMES_CWD_OVERRIDE") or _launch_configured_cwd()
               or os.environ.get("TERMINAL_CWD") or _sandbox_workspace_cwd(None) or os.getcwd())
     # An ssh cwd lives on the remote host: host expansion/isdir cannot vouch for it, and ``~`` names the REMOTE
     # user's home, never this host's. The launch profile keeps main's host fast path for everything else.

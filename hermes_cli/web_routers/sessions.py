@@ -24,6 +24,7 @@ from hermes_cli.web_server_gateway import _strip_session_list_rows
 from hermes_cli.web_server_sessions import _maybe_auto_archive_for_profile, _session_latest_descendant
 from hermes_cli.web_models import (
     BulkDeleteSessions, SessionImport, SessionOwnerBackfill, SessionPrune, SessionRename)
+from hermes_cli.web_time import normalize_session_timestamps, normalize_message_timestamp
 from hermes_cli.web_routers._common import (
     CORRUPT_STORE_DETAIL, corrupt_store_as_status, log as _log, destructive_profile, http_failure,
 )
@@ -225,6 +226,7 @@ def get_sessions(
             now = time.time()
             row_profile = profile_name or _cron_default_profile()
             for s in sessions:
+                normalize_session_timestamps(s, now=now)
                 s["is_active"] = _is_active(s, now)
                 s["profile"] = row_profile
                 s["is_default_profile"] = row_profile == "default"
@@ -369,6 +371,7 @@ async def search_sessions(
                 except Exception:
                     row = None
                 if row:
+                    normalize_session_timestamps(row, now=now)
                     last_active = row.get("last_active") or row.get("started_at")
                     payload.update({
                         "id": row.get("id") or sid,
@@ -568,6 +571,7 @@ async def get_session_detail(session_id: str, profile: Optional[str] = None):
             raise HTTPException(status_code=404, detail=_NOT_FOUND)
         # Always stamp the owner: unowned default-profile rows made multi-profile
         # clients resolve them to whichever gateway happened to be active.
+        normalize_session_timestamps(session)
         session["profile"] = _serving_profile(profile)
         session["is_default_profile"] = session["profile"] == "default"
         # A cron run's liveness is scheduler ownership, not the 300s activity
@@ -717,6 +721,8 @@ def _project_for_display(messages: list, *, home=None, inline_images: bool = Tru
             projected["display_content"] = display_view.get("content")
             projected.pop("display_kind", None)
         projected_messages.append(projected)
+    for projected in projected_messages:
+        normalize_message_timestamp(projected)
     return project_history_commentary(projected_messages, home=home)
 
 

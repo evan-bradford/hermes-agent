@@ -111,7 +111,7 @@ def _cwd_info(session: dict, cwd: str, branch=None) -> dict:
     if (agent := session.get("agent")) is not None:
         return _session_info(agent, session)
     return {"cwd": cwd, "branch": git_probe.branch(cwd) if branch is None else branch,
-            "project": _project_info_for_cwd(cwd), "lazy": True,
+            "project": _project_info_for_cwd(cwd, session.get("profile_home")), "lazy": True,
             "desktop_contract": DESKTOP_BACKEND_CONTRACT}
 
 
@@ -376,7 +376,7 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
                         **({"messages_omitted": True} if copy_parent_history
                            else {"messages": _history_to_messages(history, profile_home=session.get("profile_home"))}),
                         "info": {**_lazy_info_route(session, override), "tools": {}, "skills": {}, "cwd": session["cwd"], "branch": git_probe.branch(session["cwd"]),
-                                 "project": _project_info_for_cwd(session["cwd"]), "lazy": True,
+                                 "project": _project_info_for_cwd(session["cwd"], session.get("profile_home")), "lazy": True,
                                  "desktop_contract": DESKTOP_BACKEND_CONTRACT,
                                  "profile_name": _response_profile_name(profile)}})
                 # The session was closed between the original create and the retry —
@@ -485,7 +485,7 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
         "session_id": sid, "stored_session_id": key, "message_count": len(messages),
         **({"messages_omitted": True} if copy_parent_history else {"messages": messages}),
         "info": {**_lazy_info_route(_sessions[sid], override), "tools": {}, "skills": {}, "cwd": cwd, "branch": git_probe.branch(cwd),
-                 "project": _project_info_for_cwd(cwd), "lazy": True, "desktop_contract": DESKTOP_BACKEND_CONTRACT,
+                 "project": _project_info_for_cwd(cwd, profile_home), "lazy": True, "desktop_contract": DESKTOP_BACKEND_CONTRACT,
                  "profile_name": _response_profile_name(profile)}})
 
 
@@ -1992,7 +1992,7 @@ def _(rid, params: dict, session: dict) -> dict:
         tokens=_session_usage_snapshot(session).get("total"), agent_running=bool(session.get("running")),
         home=session.get("profile_home"),
     )
-    project = _project_info_for_cwd(_display_session_cwd(session))
+    project = _project_info_for_cwd(_display_session_cwd(session), session.get("profile_home"))
     lines = [
         "Hermes TUI Status", "", *status_lines(fields, "session_id", "path"),
         *([f"Project: {project['name']}"] if project else []),
