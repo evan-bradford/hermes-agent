@@ -561,6 +561,7 @@ def _linked_worktree_parent(root: Path) -> Optional[Path]:
         proc = subprocess.run(
             ["git", "rev-parse", "--git-common-dir"],
             cwd=str(root), capture_output=True, text=True, timeout=5,
+            stdin=subprocess.DEVNULL,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise _GitProbeFailed(str(exc)) from exc
