@@ -1512,9 +1512,9 @@ def _apply_in_dir(args) -> None:
         os.environ["TERMINAL_CWD"] = _target_dir
     args.no_restore_cwd = True
     args._in_dir_applied = True
+    # The terminal tool re-applies this once the backend is bridged (local only); writing
+    # TERMINAL_CWD here would leak a host path into an unbridged docker/ssh backend.
     os.environ["_HERMES_CWD_OVERRIDE"] = _target_dir
-    if os.environ.get("TERMINAL_ENV", "local").strip().lower() == "local":
-        os.environ["TERMINAL_CWD"] = _target_dir
 
 
 def _import_foreign_resume(args) -> None:
