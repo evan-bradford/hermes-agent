@@ -456,6 +456,7 @@ def _setup_worktree(repo_root: str = None, sync_base: bool = True,
         return None
     base_ref, base_label = added
     _copy_worktree_includes(repo_root, wt_path)
+    _inherit_project_skill_trust(repo_root, wt_path)
 
     # Lock so other processes (and `git worktree remove`) see it is in use; fail-soft.
     try:
@@ -502,6 +503,62 @@ def _worktree_merge_base_ref(path: str, timeout: float = 5) -> Optional[str]:
     if _git_out(["for-each-ref", "--format=%(refname)", "refs/remotes"], path, timeout=timeout) == "":
         return _worktree_local_trunk(path, timeout=timeout)
     return None
+
+
+def _inherit_project_skill_trust(repo_root: str, wt_path: Path) -> None:
+    """Trust a new worktree's project skills when its parent repo is already trusted.
+
+    A worktree is a new project root for skill discovery, and trust is keyed to an exact
+    resolved path, so ``<wt>/.hermes/skills`` would not load even though the user already
+    vouched for this very repository. That failure is silent and asymmetric: the lane still
+    loads same-named profile skills, so an orientation/routing skill that lives ONLY in the
+    repo just quietly disappears and the session reads as healthy.
+
+    Inheriting is not a new trust decision: the parent root is already in
+    ``skills.trusted_project_dirs``, the worktree is the same repository, and its skills are
+    the same tracked files at a different revision. Untrusted parents are never promoted.
+
+    Fail-soft: a worktree that works is worth more than its skill wiring, so every failure
+    here degrades to the pre-existing behaviour (untrusted, recoverable with
+    ``hermes skills trust <path>``).
+    """
+    try:
+        from agent.skill_utils import (
+            _candidate_project_skills_dirs,
+            is_project_root_trusted,
+        )
+        from hermes_cli.config import load_config, save_config
+
+        parent = Path(repo_root).resolve()
+        # Only inherit a trust decision the user already made for THIS repo.
+        if not is_project_root_trusted(parent):
+            return
+        # Nothing to load means nothing to trust; skip the config churn.
+        if not _candidate_project_skills_dirs(parent):
+            return
+
+        target = str(wt_path.resolve())
+        config = load_config()
+        skills_cfg = config.setdefault("skills", {})
+        trusted = skills_cfg.get("trusted_project_dirs") or []
+        if not isinstance(trusted, list):
+            trusted = [trusted]
+        trusted = [str(t) for t in trusted]
+
+        for entry in trusted:
+            try:
+                if str(Path(entry).expanduser().resolve()) == target:
+                    return  # already trusted (idempotent across recreated worktrees)
+            except OSError:
+                continue
+
+        skills_cfg["trusted_project_dirs"] = trusted + [target]
+        save_config(config)
+        logger.debug("Inherited project-skill trust for worktree: %s", target)
+        _cprint(f"\033[32m✓ Project skills trusted:\033[0m {target}")
+    except Exception as e:
+        # Never fail worktree creation over skill wiring.
+        logger.debug("project-skill trust inheritance skipped (non-fatal): %s", e)
 
 
 def _worktree_has_unpushed_commits(worktree_path: str, timeout: int = 10) -> bool:

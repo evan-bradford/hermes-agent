@@ -6,7 +6,9 @@ import hashlib
 import logging
 import os
 import re
+import subprocess
 import sys
+from functools import lru_cache
 from pathlib import Path, PurePath
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
@@ -543,12 +545,81 @@ def _project_trusted_dirs_from_config() -> Set[Path]:
     return result
 
 
-def is_project_root_trusted(root: Path) -> bool:
-    """True when *root* is listed in ``skills.trusted_project_dirs``."""
+class _GitProbeFailed(Exception):
+    """git could not say whether a root is a linked worktree (never cached)."""
+
+
+def _linked_worktree_parent(root: Path) -> Optional[Path]:
+    """Main checkout of *root* when *root* is a LINKED worktree, else None.
+
+    ``--git-common-dir`` prints a bare relative ``.git`` from a main checkout and an
+    absolute path from a linked worktree, which is exactly the discriminator needed (a
+    main checkout must never "inherit" from itself). Raises ``_GitProbeFailed`` when git
+    cannot answer, so "not a linked worktree" (cacheable) stays distinct from "unknown".
+    """
     try:
-        return Path(root).resolve() in _project_trusted_dirs_from_config()
+        proc = subprocess.run(
+            ["git", "rev-parse", "--git-common-dir"],
+            cwd=str(root), capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise _GitProbeFailed(str(exc)) from exc
+    out = (proc.stdout or "").strip()
+    if proc.returncode != 0 or not out:
+        raise _GitProbeFailed(f"git rev-parse --git-common-dir exited {proc.returncode}")
+    common = Path(out)
+    if not common.is_absolute():
+        return None  # main checkout
+    try:
+        parent = common.resolve().parent
+    except OSError as exc:
+        raise _GitProbeFailed(str(exc)) from exc
+    return parent if parent != Path(root).resolve() else None
+
+
+@lru_cache(maxsize=256)
+def _worktree_parent_cached(root_str: str) -> Optional[Path]:
+    """Process-wide cache of :func:`_linked_worktree_parent` — a FILESYSTEM fact only.
+
+    One backend process serves every profile, so the cached value must never be a trust
+    VERDICT (whichever profile asked first would answer for all of them). A failed git probe
+    raises, and ``lru_cache`` does not cache exceptions, so a lookup racing
+    ``git worktree add`` is retried rather than pinned.
+    """
+    return _linked_worktree_parent(Path(root_str))
+
+
+def _inherits_trust_from_parent_repo(root_str: str) -> bool:
+    """Whether *root* is a linked worktree of an explicitly trusted repository.
+
+    A worktree is not a new trust decision: it is the same repository at another revision.
+    Without this, every worktree silently drops repo-only skills while still loading
+    same-named profile skills, so the session reads as healthy. Resolved at read time so it
+    covers every creation path (desktop "New worktree", ``hermes -w``, bare
+    ``git worktree add``); the trust list is read from the ACTIVE profile on every call.
+    """
+    try:
+        parent = _worktree_parent_cached(root_str)
+    except _GitProbeFailed:
+        return False
+    if parent is None:
+        return False
+    try:
+        return parent.resolve() in _project_trusted_dirs_from_config()
     except OSError:
         return False
+
+
+def is_project_root_trusted(root: Path) -> bool:
+    """True when *root* is listed in ``skills.trusted_project_dirs``, or is a linked
+    worktree of a listed repository (see :func:`_inherits_trust_from_parent_repo`)."""
+    try:
+        resolved = Path(root).resolve()
+    except OSError:
+        return False
+    if resolved in _project_trusted_dirs_from_config():
+        return True
+    return _inherits_trust_from_parent_repo(str(resolved))
 
 
 def _candidate_project_skills_dirs(root: Path) -> List[Path]:
