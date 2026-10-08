@@ -178,7 +178,7 @@ import {
   useOpenKeybindsListener,
   usePublishRestartPreviewServer
 } from './wiring-effects'
-import { POOL_LIMITS_SETTINGS_ROUTE } from './wiring-routing'
+import { branchSessionForOwner, POOL_LIMITS_SETTINGS_ROUTE } from './wiring-routing'
 
 // Overlay views the controller mounts over the shell — lazy, load on demand.
 // The workspace-route full-page views (skills/messaging/artifacts) are the
@@ -1105,7 +1105,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     onAttachImageBlob: composer.attachImageBlob,
     onAttachPastedText: composer.attachPastedText,
     onBranchInNewChat: messageId => void branchInNewChat(messageId),
-    onBranchSession: sessionId => void branchStoredSession(sessionId),
+    onBranchSession: (sessionId, profile) => void branchSessionForOwner(branchStoredSession, sessionId, profile),
     onCancel: cancelRun,
     onDeleteSelectedSession: () => {
       const id = $selectedStoredSessionId.get()

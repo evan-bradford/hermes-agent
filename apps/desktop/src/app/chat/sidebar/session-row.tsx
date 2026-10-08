@@ -23,7 +23,7 @@ import { displayModelName } from '@/lib/model-status-label'
 import { sessionProjectLabel } from '@/lib/session-project-label'
 import { SESSION_ROW_AREAS } from '@/lib/session-row-slots'
 import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
-import { coarseElapsed } from '@/lib/time'
+import { coarseElapsed, firstValidUnixSeconds } from '@/lib/time'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { $sidebarRowMeta } from '@/store/layout'
@@ -159,7 +159,7 @@ function SidebarSessionRowImpl({
     toolCallCount: fmt.toolCallCount
   })
 
-  const timestamp = session.last_active || session.started_at
+  const timestamp = firstValidUnixSeconds([session.last_active, session.started_at])
   const age = formatAge(timestamp, r)
   const timestampDate = new Date(timestamp * 1000)
   const absoluteAge = formatMessageTimestamp(timestampDate, t.assistant.thread)

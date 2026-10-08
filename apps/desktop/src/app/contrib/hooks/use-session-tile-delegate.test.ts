@@ -50,6 +50,7 @@ function renderTile(
   requestGateway: ReturnType<typeof vi.fn>,
   options: {
     branchLoadedSession?: ReturnType<typeof vi.fn>
+    branchStoredSession?: (storedSessionId: string, sessionProfile?: null | string) => Promise<unknown>
     runtimeIdByStoredSessionIdRef?: { current: Map<string, string> }
     sessionStateByRuntimeIdRef?: { current: Map<string, unknown> }
     updateSessionState?: ReturnType<typeof vi.fn>
@@ -59,7 +60,7 @@ function renderTile(
     useSessionTileDelegate({
       archiveSession: vi.fn(async () => undefined),
       branchLoadedSession: (options.branchLoadedSession ?? vi.fn(async () => false)) as never,
-      branchStoredSession: vi.fn(async () => undefined),
+      branchStoredSession: options.branchStoredSession ?? vi.fn(async () => undefined),
       executeSlashCommand: vi.fn(async () => undefined) as never,
       removeSession: vi.fn(async () => undefined),
       requestGateway: requestGateway as never,
@@ -78,6 +79,19 @@ describe('useSessionTileDelegate resumeTile', () => {
 
   afterEach(() => {
     setSessions([])
+  })
+
+  it('carries the owning profile into a session-tile branch', async () => {
+    setSessions([row({ id: 'stored-branch', profile: 'sfb' })])
+    const branchStoredSession = vi.fn(async () => true)
+
+    renderTile(
+      vi.fn(async () => ({}) as never),
+      { branchStoredSession }
+    )
+    await sessionTileDelegate()!.branchSession('stored-branch')
+
+    expect(branchStoredSession).toHaveBeenCalledWith('stored-branch', 'sfb')
   })
 
   it('carries the owning profile into a cold tile resume so it cannot fork profiles', async () => {

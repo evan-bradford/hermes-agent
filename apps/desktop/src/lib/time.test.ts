@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   calendarBucket,
   DAY,
+  firstValidUnixSeconds,
   fmtMonth,
   fmtMonthYear,
   formatAgo,
@@ -44,6 +45,18 @@ describe('formatAgo', () => {
 
 // Thursday 18 Jun 2026, local noon (15 Jun 2026 is a Monday).
 const THU_NOON = new Date(2026, 5, 18, 12, 0, 0).getTime()
+
+describe('firstValidUnixSeconds', () => {
+  it('falls through corrupt and implausibly future values', () => {
+    const valid = THU_NOON / SECOND
+
+    expect(firstValidUnixSeconds([Number.NaN, Number.MAX_VALUE, valid], THU_NOON)).toBe(valid)
+  })
+
+  it('falls back to now when no durable value is renderable', () => {
+    expect(firstValidUnixSeconds([0, Number.POSITIVE_INFINITY], THU_NOON)).toBe(THU_NOON / SECOND)
+  })
+})
 
 const secondsAt = (year: number, month: number, day: number, hour = 10) =>
   Math.floor(new Date(year, month, day, hour, 0, 0).getTime() / 1000)

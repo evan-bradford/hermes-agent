@@ -364,6 +364,7 @@ import { createLocalBackendLifecycle, waitForTeardown } from './local-backend-li
 import { resolveIpcFileReadPath, resolveMediaStreamFile, resolvePreviewTargetPath } from './local-read-path'
 import { localSkinProfileKey, readLocalSkinPayload } from './local-skin'
 import { ACTIVE_LOG_POLL_MS, planLogRotation, reclaimActiveLogIfOversized } from './log-rotation'
+import { reconcileLoopbackSessionToken, refreshLoopbackSessionToken } from './loopback-token-refresh'
 import { registerMachineProfile } from './machine-profile'
 import { createMainProcessLagWatchdog } from './main-process-lag-watchdog'
 import { activateWindow, ensureMainWindow, shouldQuitOnLastChatClosed } from './main-window-lifecycle'
@@ -12989,7 +12990,28 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
       backendConnectionState.assertCurrentAttempt(connectionAttempt)
 
       await advanceBootProgress('backend.remote', `Connecting to remote Hermes backend at ${remote.baseUrl}`, 24)
-      await waitForRemoteHermes(remote)
+
+      try {
+        await waitForRemoteHermes(remote)
+      } catch (error) {
+        // The custom env route is commonly a loopback SSH tunnel. Its dashboard
+        // token rotates when the remote service restarts, so retry readiness
+        // once with the token currently injected by that same loopback page.
+        if (!(await refreshRemoteLoopbackToken(remote, error))) {
+          throw error
+        }
+
+        await waitForRemoteHermes(remote)
+      }
+
+      // Readiness can be public, so it may succeed even when this app was
+      // launched with a dashboard token that rotated during a backend restart.
+      // Reconcile before serializing the descriptor for the renderer; otherwise
+      // its first WebSocket URL permanently contains the stale token even if a
+      // later main-process REST request learns the replacement.
+      if (await reconcileRemoteLoopbackToken(remote)) {
+        await waitForRemoteHermes(remote)
+      }
 
       // Second async boundary: the health probe itself can outlive the
       // attempt. A late success here must not publish a stale descriptor.
@@ -16730,6 +16752,76 @@ async function getJsonForBackend(descriptor, path, opts: any = {}) {
   return fetchJsonForBackend(descriptor, path, opts)
 }
 
+/**
+ * Adopt a rotated dashboard token only for the env-selected loopback route.
+ * The unauthenticated index token is part of the loopback dashboard contract
+ * (and is already how the user's launcher obtains its initial credential).
+ * Never apply this to saved remotes, non-loopback hosts, OAuth, or non-401s.
+ */
+async function refreshRemoteLoopbackToken(descriptor, error) {
+  let token
+
+  try {
+    token = await refreshLoopbackSessionToken(descriptor, error, {
+      resolveToken: (baseUrl, fallbackToken) =>
+        resolveServedDashboardToken(baseUrl, fallbackToken, {
+          rememberLog,
+          timeoutMs: DEFAULT_FETCH_TIMEOUT_MS
+        })
+    })
+  } catch (refreshError: any) {
+    rememberLog(`[remote] loopback session-token refresh failed: ${refreshError.message}`)
+
+    return false
+  }
+
+  if (!token) {
+    return false
+  }
+
+  descriptor.token = token
+  descriptor.wsUrl = buildGatewayWsUrl(descriptor.baseUrl, token)
+  process.env.HERMES_DESKTOP_REMOTE_TOKEN = token
+  rememberRemoteWsHeaders(descriptor.wsUrl, descriptor.headers)
+  rememberLog('[remote] adopted rotated loopback dashboard session token after HTTP 401')
+
+  return true
+}
+
+/**
+ * Reconcile the env-selected loopback token before the initial connection
+ * descriptor crosses the IPC boundary into the renderer.
+ */
+async function reconcileRemoteLoopbackToken(descriptor) {
+  let token
+
+  try {
+    token = await reconcileLoopbackSessionToken(descriptor, {
+      resolveToken: (baseUrl, fallbackToken) =>
+        resolveServedDashboardToken(baseUrl, fallbackToken, {
+          rememberLog,
+          timeoutMs: DEFAULT_FETCH_TIMEOUT_MS
+        })
+    })
+  } catch (reconcileError: any) {
+    rememberLog(`[remote] loopback session-token boot reconciliation failed: ${reconcileError.message}`)
+
+    throw reconcileError
+  }
+
+  if (!token) {
+    return false
+  }
+
+  descriptor.token = token
+  descriptor.wsUrl = buildGatewayWsUrl(descriptor.baseUrl, token)
+  process.env.HERMES_DESKTOP_REMOTE_TOKEN = token
+  rememberRemoteWsHeaders(descriptor.wsUrl, descriptor.headers)
+  rememberLog('[remote] adopted rotated loopback dashboard session token during boot')
+
+  return true
+}
+
 // Any-method REST call against a resolved backend descriptor — the descriptor
 // analogue of the hermes:api handler's own auth split: OAuth backends prefer a
 // native bearer (cookieless RFC 8252 flow) and fall back to the OAuth cookie
@@ -16762,13 +16854,27 @@ async function fetchJsonForBackend(
     })
   }
 
-  return fetchJson(url, descriptor.token, {
-    method: opts.method,
-    body: opts.body,
-    upload: opts.upload,
-    timeoutMs: opts.timeoutMs,
-    headers: descriptor.headers
-  })
+  const request = () =>
+    fetchJson(url, descriptor.token, {
+      method: opts.method,
+      body: opts.body,
+      upload: opts.upload,
+      timeoutMs: opts.timeoutMs,
+      headers: descriptor.headers
+    })
+
+  try {
+    return await request()
+  } catch (error) {
+    // HTTP 401 is produced by the token middleware before route dispatch, so
+    // retrying once with the freshly served token cannot double-submit a
+    // mutation. Other failures retain the normal verb-gated retry policy.
+    if (!(await refreshRemoteLoopbackToken(descriptor, error))) {
+      throw error
+    }
+
+    return request()
+  }
 }
 
 ipcMain.handle('hermes:connection-config:probe', async (_event, rawUrl) => probeRemoteAuthMode(rawUrl))

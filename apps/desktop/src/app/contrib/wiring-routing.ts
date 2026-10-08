@@ -13,6 +13,19 @@ import { SETTINGS_ROUTE } from '../routes'
 export const POOL_LIMITS_SETTINGS_ROUTE = `${SETTINGS_ROUTE}?tab=config:advanced`
 
 /**
+ * Branch a sidebar/project-tree row on the profile that row is stamped with.
+ * The sidebar passes `session.profile`; dropping it lets a same-id row from
+ * another profile supply the branch's owner and workspace.
+ */
+export function branchSessionForOwner(
+  branchStoredSession: (storedSessionId: string, sessionProfile?: null | string) => Promise<boolean>,
+  storedSessionId: string,
+  sessionProfile?: null | string
+): Promise<boolean> {
+  return branchStoredSession(storedSessionId, sessionProfile)
+}
+
+/**
  * Resolve a runtime session id back to its stored id by reverse-scanning the
  * stored->runtime binding map — the same ladder use-session-tile-delegate's
  * `storedSessionIdForRuntime` uses. Returns undefined when the id isn't a known

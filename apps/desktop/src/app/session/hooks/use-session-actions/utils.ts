@@ -2120,13 +2120,18 @@ function projectTreeSessions(): SessionInfo[] {
 // "Best" means self-describing: the same conversation can appear both as an
 // ownerless legacy Recents copy and as a profile-stamped project-tree row, and
 // picking the ownerless one throws away the only routing information we have.
-export function cachedSessionRow(storedSessionId: string): SessionInfo | undefined {
+export function cachedSessionRow(storedSessionId: string, profile?: string): SessionInfo | undefined {
   const candidates = [
     ...$sessions.get(),
     ...$cronSessions.get(),
     ...$messagingSessions.get(),
     ...projectTreeSessions()
-  ].filter(session => sessionMatchesStoredId(session, storedSessionId))
+  ].filter(
+    session =>
+      sessionMatchesStoredId(session, storedSessionId) &&
+      (profile === undefined ||
+        (session.profile?.trim() && normalizeProfileKey(session.profile) === normalizeProfileKey(profile)))
+  )
 
   return (
     candidates.find(session => session.connection_id?.trim()) ??
@@ -2139,7 +2144,7 @@ export type StoredSessionProbe = { status: 'found'; session: SessionInfo } | { s
 
 export async function resolveStoredSession(
   storedSessionId: string,
-  ownerRoute?: SessionProfileRoute
+  ownerRoute?: SessionOwnerScope
 ): Promise<SessionInfo | undefined> {
   const result = await probeStoredSession(storedSessionId, ownerRoute)
 
@@ -2153,7 +2158,7 @@ export async function resolveStoredSession(
  *  ids that live on a profile not yet listed (#125678). */
 export async function probeStoredSession(
   storedSessionId: string,
-  ownerRoute?: SessionProfileRoute
+  ownerRoute?: SessionOwnerScope
 ): Promise<StoredSessionProbe> {
   let allGone = true
 
@@ -2165,6 +2170,30 @@ export async function probeStoredSession(
   // Snapshot BEFORE any await: a resolve that started before an archive/delete
   // must reject its own stale response (see upsertResolvedSession).
   const tombstoneGenerationsAtRequestStart = captureSessionTombstoneGenerations()
+
+  // An explicit profile (the owning row's stamp, forwarded by the caller) is
+  // fail-closed like an exact owner: when its own lookup misses it must never
+  // borrow a same-id row — and that row's workspace — from another profile.
+  if (typeof ownerRoute === 'string') {
+    const profile = normalizeProfileKey(ownerRoute)
+    const ownedCached = cachedSessionRow(storedSessionId, profile)
+
+    if (ownedCached) {
+      return { status: 'found', session: ownedCached }
+    }
+
+    try {
+      const session = await getSession(storedSessionId, profile)
+      session.profile = profile
+      upsertResolvedSession(session, storedSessionId, tombstoneGenerationsAtRequestStart)
+
+      return { status: 'found', session }
+    } catch (error) {
+      recordFailure(error)
+
+      return { status: allGone ? 'gone' : 'inconclusive' }
+    }
+  }
 
   const cached = cachedSessionRow(storedSessionId)
 
