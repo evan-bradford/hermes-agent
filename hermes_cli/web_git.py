@@ -782,10 +782,34 @@ def branch_list(cwd: str) -> list[dict]:
     ]
 
 
+def _serving_root() -> Path:
+    """The tree this backend imports its code from: the live checkout on a source install."""
+    return Path(__file__).resolve().parent.parent
+
+
+def _is_serving_checkout(cwd: str) -> bool:
+    """True when ``cwd`` sits in the main checkout this backend runs from.
+
+    Services import straight from that tree, so switching its branch swaps the code
+    under the running gateway and dashboards. A linked worktree of the same repo has
+    its own toplevel and stays switchable."""
+    top = _git_line(cwd, ["rev-parse", "--show-toplevel"])
+    return bool(top) and Path(top).resolve() == _serving_root()
+
+
 def branch_switch(cwd: str, branch: str) -> dict:
     target = _sanitize_branch(branch)
     if not target:
         raise RuntimeError("Branch name is required.")
+    if _is_serving_checkout(cwd):
+        # A lane's "+" switches before opening a chat; on this tree that would
+        # roll the running install back to whatever the lane's branch holds.
+        if _git_line(cwd, ["branch", "--show-current"]) == target:
+            return {"branch": target}
+        raise RuntimeError(
+            "This checkout is the Hermes install serving this backend; switching it to "
+            f"'{target}' would swap the running code. Open the branch in a worktree instead."
+        )
     _git_ok(cwd, ["switch", target])
     return {"branch": target}
 
